@@ -1641,6 +1641,11 @@ function renderTimeline() {
   scenarioCards.forEach((card) => {
     const id = card.getAttribute('data-scenario-id');
     card.addEventListener('click', () => selectScenario(id));
+    card.addEventListener('dblclick', () => {
+      if (id) {
+        openScenarioModal(id);
+      }
+    });
   });
 
   drawConnections(visibleScenarios);
