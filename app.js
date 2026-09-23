@@ -1450,6 +1450,124 @@ function getPlacementSummary(scenario) {
   return `${scenario.placement.relation} : ${referenceTitle}`;
 }
 
+function getStoryLaneKey(scenario) {
+  return Array.isArray(scenario?.tags) && scenario.tags[0] ? scenario.tags[0] : '__untagged__';
+}
+
+function computeStoryLaneLayout(scenarios) {
+  const scenariosByMonth = new Map();
+  scenarios.forEach((scenario) => {
+    const key = getMonthKey(scenario);
+    if (!scenariosByMonth.has(key)) scenariosByMonth.set(key, []);
+    scenariosByMonth.get(key).push(scenario);
+  });
+
+  const rowById = new Map();
+  scenariosByMonth.forEach((monthScenarios) => {
+    const scenarioMap = new Map(monthScenarios.map((scenario) => [scenario.id, scenario]));
+    const depthById = new Map();
+    const resolveDepth = (scenarioId, seen = new Set()) => {
+      if (seen.has(scenarioId)) return 0;
+      if (depthById.has(scenarioId)) return depthById.get(scenarioId);
+      seen.add(scenarioId);
+      const scenario = scenarioMap.get(scenarioId);
+      const reference = scenario?.placement ? scenarioMap.get(scenario.placement.referenceScenarioId) : null;
+      const depth = reference ? resolveDepth(reference.id, seen) + (scenario.placement.relation === 'after' ? 1 : 0) : 0;
+      depthById.set(scenarioId, depth);
+      return depth;
+    };
+    const adjacency = new Map(monthScenarios.map((scenario) => [scenario.id, new Set()]));
+    monthScenarios.forEach((scenario) => {
+      const referenceId = scenario.placement?.relation === 'same' ? scenario.placement.referenceScenarioId : null;
+      if (!referenceId || !adjacency.has(referenceId)) return;
+      adjacency.get(scenario.id).add(referenceId);
+      adjacency.get(referenceId).add(scenario.id);
+    });
+    const visited = new Set();
+    monthScenarios.forEach((scenario) => {
+      if (visited.has(scenario.id)) return;
+      const component = [];
+      const stack = [scenario.id];
+      visited.add(scenario.id);
+      while (stack.length) {
+        const currentId = stack.pop();
+        component.push(currentId);
+        adjacency.get(currentId).forEach((neighborId) => {
+          if (visited.has(neighborId)) return;
+          visited.add(neighborId);
+          stack.push(neighborId);
+        });
+      }
+      const row = Math.max(...component.map((id) => resolveDepth(id)));
+      component.forEach((id) => rowById.set(id, row));
+    });
+  });
+
+  const getTimelineOrder = (scenario) => (scenario.year * 12 + scenario.month) * 1000 + (rowById.get(scenario.id) ?? 0);
+  const stories = new Map();
+  scenarios.forEach((scenario, index) => {
+    const key = getStoryLaneKey(scenario);
+    const order = getTimelineOrder(scenario);
+    if (!stories.has(key)) stories.set(key, { key, start: order, end: order, firstIndex: index, width: 1, branchById: new Map() });
+    const story = stories.get(key);
+    story.start = Math.min(story.start, order);
+    story.end = Math.max(story.end, order);
+  });
+
+  const scenariosByStoryRow = new Map();
+  scenarios.forEach((scenario) => {
+    const key = `${getStoryLaneKey(scenario)}:${getTimelineOrder(scenario)}`;
+    if (!scenariosByStoryRow.has(key)) scenariosByStoryRow.set(key, []);
+    scenariosByStoryRow.get(key).push(scenario);
+  });
+  scenariosByStoryRow.forEach((rowScenarios) => {
+    const story = stories.get(getStoryLaneKey(rowScenarios[0]));
+    rowScenarios.slice().sort((a, b) => {
+      const priorityDiff = Number(b.xPriority ?? 1) - Number(a.xPriority ?? 1);
+      return priorityDiff || a.title.localeCompare(b.title);
+    }).forEach((scenario, index) => story.branchById.set(scenario.id, index));
+    story.width = Math.max(story.width, rowScenarios.length);
+  });
+
+  const assignedStories = [];
+  [...stories.values()]
+    .filter((story) => story.key !== '__untagged__')
+    .sort((a, b) => a.start - b.start || a.firstIndex - b.firstIndex || a.key.localeCompare(b.key))
+    .forEach((story) => {
+      const activeStories = assignedStories.filter((assigned) => assigned.end >= story.start);
+      let column = 0;
+      while (activeStories.some((assigned) => column < assigned.column + assigned.width && column + story.width > assigned.column)) column += 1;
+      story.column = column;
+      assignedStories.push(story);
+    });
+
+  const untaggedStory = stories.get('__untagged__');
+  if (untaggedStory) {
+    untaggedStory.column = assignedStories.reduce((rightmost, story) => Math.max(rightmost, story.column + story.width), 0);
+  }
+
+  const connectedIds = new Set();
+  scenariosByMonth.forEach((monthScenarios) => {
+    monthScenarios.forEach((scenario, index) => monthScenarios.slice(index + 1).forEach((otherScenario) => {
+      if (hasSameParticipantName(scenario, otherScenario)) {
+        connectedIds.add(scenario.id);
+        connectedIds.add(otherScenario.id);
+      }
+    }));
+  });
+
+  const layoutById = new Map();
+  scenarios.forEach((scenario) => {
+    const story = stories.get(getStoryLaneKey(scenario));
+    layoutById.set(scenario.id, {
+      x: (story.column + (story.branchById.get(scenario.id) ?? 0)) * 310,
+      y: (rowById.get(scenario.id) ?? 0) * 120,
+      connected: connectedIds.has(scenario.id)
+    });
+  });
+  return layoutById;
+}
+
 function selectScenario(scenarioId) {
   if (!scenarioId) {
     return;
@@ -1580,14 +1698,14 @@ function renderTimeline() {
   });
 
   const allRendered = [];
-  const placementState = {
-    placedById: new Map(),
-    usedColumns: new Set()
-  };
+  const layoutById = computeStoryLaneLayout(state.scenarios);
 
   monthKeys.forEach((monthKey) => {
     const monthScenarios = monthMap.get(monthKey);
-    const rendered = computeMonthLayout(monthScenarios, placementState);
+    const rendered = monthScenarios.map((scenario) => ({
+      ...scenario,
+      ...(layoutById.get(scenario.id) || { x: 0, y: 0, connected: false })
+    }));
     allRendered.push({ key: monthKey, scenarios: rendered });
   });
 
@@ -2441,6 +2559,13 @@ function drawConnections(visibleScenarios = state.scenarios) {
   const zoomLayer = timelineEl.querySelector('.timeline-zoom-layer') || timelineEl;
   const visualSvg = createConnectionLayerSvg('timeline-overlay');
   const hitSvg = createConnectionLayerSvg('timeline-overlay hit-overlay');
+  const overlayWidth = Math.max(zoomLayer.clientWidth, zoomLayer.scrollWidth);
+  const overlayHeight = Math.max(zoomLayer.clientHeight, zoomLayer.scrollHeight);
+  [visualSvg, hitSvg].forEach((svg) => {
+    svg.style.width = `${overlayWidth}px`;
+    svg.style.height = `${overlayHeight}px`;
+    svg.setAttribute('viewBox', `0 0 ${overlayWidth} ${overlayHeight}`);
+  });
 
   const cards = [...document.querySelectorAll('.scenario-card')];
   if (cards.length < 2) {
@@ -3072,8 +3197,8 @@ document.getElementById('export-btn').addEventListener('click', () => {
         }
 
         function getScenarioTags(scenario, tags) {
-          const set = new Set(scenario.tagIds || []);
-          return tags.filter((tag) => set.has(tag.id));
+          const byId = new Map(tags.map((tag) => [tag.id, tag]));
+          return (scenario.tagIds || []).map((tagId) => byId.get(tagId)).filter(Boolean);
         }
 
         function getScenarioTagGradient(scenario, tags) {
@@ -3841,6 +3966,13 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
           const visualSvg = createConnectionLayerSvg('timeline-overlay');
           const hitSvg = createConnectionLayerSvg('timeline-overlay hit-overlay');
+          const overlayWidth = Math.max(timelineEl.clientWidth, timelineEl.scrollWidth);
+          const overlayHeight = Math.max(timelineEl.clientHeight, timelineEl.scrollHeight);
+          [visualSvg, hitSvg].forEach((svg) => {
+            svg.style.width = overlayWidth + 'px';
+            svg.style.height = overlayHeight + 'px';
+            svg.setAttribute('viewBox', '0 0 ' + overlayWidth + ' ' + overlayHeight);
+          });
           const cards = [...timelineEl.querySelectorAll('.scenario-card')];
           if (cards.length < 2) {
             timelineEl.appendChild(visualSvg);
@@ -3909,6 +4041,102 @@ document.getElementById('export-btn').addEventListener('click', () => {
             + '<div class="section-label">トレーラー</div><p class="detail-text">' + escapeHtml(selected.information.trailer || 'なし') + '</p>'
             + '<div class="section-label">詳細</div><p class="detail-text">' + escapeHtml(selected.information.description || '詳細なし') + '</p>'
             + '</div>';
+        }
+
+        function getStoryLaneKey(scenario) {
+          return scenario && scenario.tagIds && scenario.tagIds[0] ? scenario.tagIds[0] : '__untagged__';
+        }
+
+        function computeStoryLaneLayout(scenarios) {
+          const scenariosByMonth = new Map();
+          scenarios.forEach((scenario) => {
+            const key = getMonthKey(scenario);
+            if (!scenariosByMonth.has(key)) scenariosByMonth.set(key, []);
+            scenariosByMonth.get(key).push(scenario);
+          });
+          const rowById = new Map();
+          scenariosByMonth.forEach((monthScenarios) => {
+            const scenarioMap = new Map(monthScenarios.map((scenario) => [scenario.id, scenario]));
+            const depthById = new Map();
+            const resolveDepth = (scenarioId, seen = new Set()) => {
+              if (seen.has(scenarioId)) return 0;
+              if (depthById.has(scenarioId)) return depthById.get(scenarioId);
+              seen.add(scenarioId);
+              const scenario = scenarioMap.get(scenarioId);
+              const reference = scenario && scenario.placement ? scenarioMap.get(scenario.placement.referenceScenarioId) : null;
+              const depth = reference ? resolveDepth(reference.id, seen) + (scenario.placement.relation === 'after' ? 1 : 0) : 0;
+              depthById.set(scenarioId, depth);
+              return depth;
+            };
+            const adjacency = new Map(monthScenarios.map((scenario) => [scenario.id, new Set()]));
+            monthScenarios.forEach((scenario) => {
+              const referenceId = scenario.placement && scenario.placement.relation === 'same' ? scenario.placement.referenceScenarioId : null;
+              if (!referenceId || !adjacency.has(referenceId)) return;
+              adjacency.get(scenario.id).add(referenceId);
+              adjacency.get(referenceId).add(scenario.id);
+            });
+            const visited = new Set();
+            monthScenarios.forEach((scenario) => {
+              if (visited.has(scenario.id)) return;
+              const component = [];
+              const stack = [scenario.id];
+              visited.add(scenario.id);
+              while (stack.length) {
+                const currentId = stack.pop();
+                component.push(currentId);
+                adjacency.get(currentId).forEach((neighborId) => {
+                  if (visited.has(neighborId)) return;
+                  visited.add(neighborId);
+                  stack.push(neighborId);
+                });
+              }
+              const row = Math.max(...component.map((id) => resolveDepth(id)));
+              component.forEach((id) => rowById.set(id, row));
+            });
+          });
+          const getTimelineOrder = (scenario) => (scenario.year * 12 + scenario.month) * 1000 + (rowById.get(scenario.id) || 0);
+          const stories = new Map();
+          scenarios.forEach((scenario, index) => {
+            const key = getStoryLaneKey(scenario);
+            const order = getTimelineOrder(scenario);
+            if (!stories.has(key)) stories.set(key, { key, start: order, end: order, firstIndex: index, width: 1, branchById: new Map() });
+            const story = stories.get(key);
+            story.start = Math.min(story.start, order);
+            story.end = Math.max(story.end, order);
+          });
+          const scenariosByStoryRow = new Map();
+          scenarios.forEach((scenario) => {
+            const key = getStoryLaneKey(scenario) + ':' + getTimelineOrder(scenario);
+            if (!scenariosByStoryRow.has(key)) scenariosByStoryRow.set(key, []);
+            scenariosByStoryRow.get(key).push(scenario);
+          });
+          scenariosByStoryRow.forEach((rowScenarios) => {
+            const story = stories.get(getStoryLaneKey(rowScenarios[0]));
+            rowScenarios.slice().sort((a, b) => {
+              const priorityDiff = Number(b.xPriority || 1) - Number(a.xPriority || 1);
+              return priorityDiff || String(a.title || '').localeCompare(String(b.title || ''));
+            }).forEach((scenario, index) => story.branchById.set(scenario.id, index));
+            story.width = Math.max(story.width, rowScenarios.length);
+          });
+          const assignedStories = [];
+          [...stories.values()].filter((story) => story.key !== '__untagged__').sort((a, b) => a.start - b.start || a.firstIndex - b.firstIndex || a.key.localeCompare(b.key)).forEach((story) => {
+            const activeStories = assignedStories.filter((assigned) => assigned.end >= story.start);
+            let column = 0;
+            while (activeStories.some((assigned) => column < assigned.column + assigned.width && column + story.width > assigned.column)) column += 1;
+            story.column = column;
+            assignedStories.push(story);
+          });
+          const untaggedStory = stories.get('__untagged__');
+          if (untaggedStory) untaggedStory.column = assignedStories.reduce((rightmost, story) => Math.max(rightmost, story.column + story.width), 0);
+          const layoutById = new Map();
+          scenarios.forEach((scenario) => {
+            const story = stories.get(getStoryLaneKey(scenario));
+            layoutById.set(scenario.id, {
+              x: (story.column + (story.branchById.get(scenario.id) || 0)) * 310,
+              y: (rowById.get(scenario.id) || 0) * 120
+            });
+          });
+          return layoutById;
         }
 
         function computeMonthLayout(monthScenarios, placementState = null) {
@@ -4471,6 +4699,13 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
           const visualSvg = createConnectionLayerSvg('timeline-overlay');
           const hitSvg = createConnectionLayerSvg('timeline-overlay hit-overlay');
+          const overlayWidth = Math.max(timelineEl.clientWidth, timelineEl.scrollWidth);
+          const overlayHeight = Math.max(timelineEl.clientHeight, timelineEl.scrollHeight);
+          [visualSvg, hitSvg].forEach((svg) => {
+            svg.style.width = overlayWidth + 'px';
+            svg.style.height = overlayHeight + 'px';
+            svg.setAttribute('viewBox', '0 0 ' + overlayWidth + ' ' + overlayHeight);
+          });
           const cards = [...timelineEl.querySelectorAll('.scenario-card')];
           if (cards.length < 2) {
             timelineEl.appendChild(visualSvg);
@@ -4626,16 +4861,13 @@ document.getElementById('export-btn').addEventListener('click', () => {
               return yearA * 12 + monthA - (yearB * 12 + monthB);
             });
 
-            const placementState = {
-              placedById: new Map(),
-              usedColumns: new Set()
-            };
+            const layoutById = computeStoryLaneLayout(scenarios);
             const htmlParts = [];
 
             monthKeys.forEach((key) => {
               const [year, month] = key.split('-').map(Number);
               const items = monthMap.get(key).slice();
-              const layout = computeMonthLayout(items, placementState);
+              const layout = items.map((scenario) => Object.assign({}, scenario, layoutById.get(scenario.id) || { x: 0, y: 0 }));
               const maxY = Math.max(...layout.map((item) => item.y + 116), 140);
               const cards = layout.map((item) => {
                 const gradient = getScenarioTagGradient(item, tags);
