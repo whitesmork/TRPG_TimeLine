@@ -1560,7 +1560,7 @@ function computeStoryLaneLayout(scenarios) {
   scenarios.forEach((scenario) => {
     const story = stories.get(getStoryLaneKey(scenario));
     layoutById.set(scenario.id, {
-      x: (story.column + (story.branchById.get(scenario.id) ?? 0)) * 310,
+      x: (story.column + (story.branchById.get(scenario.id) ?? 0)) * 280,
       y: (rowById.get(scenario.id) ?? 0) * 120,
       connected: connectedIds.has(scenario.id)
     });
@@ -4132,7 +4132,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
           scenarios.forEach((scenario) => {
             const story = stories.get(getStoryLaneKey(scenario));
             layoutById.set(scenario.id, {
-              x: (story.column + (story.branchById.get(scenario.id) || 0)) * 310,
+              x: (story.column + (story.branchById.get(scenario.id) || 0)) * 280,
               y: (rowById.get(scenario.id) || 0) * 120
             });
           });
