@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TRPG Timeline</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar left-panel">
+        <div class="panel-header">
+          <h2>シナリオ一覧</h2>
+        </div>
+        <div id="scenario-list" class="scenario-list"></div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="toolbar">
+          <div class="toolbar-actions">
+            <button id="add-scenario-btn" class="secondary-btn">シナリオ追加</button>
+            <button id="manage-tags-btn" class="secondary-btn">タグ管理</button>
+            <button id="json-export-btn" class="secondary-btn">JSON保存</button>
+            <button id="json-import-btn" class="secondary-btn">JSON読込</button>
+            <button id="export-btn" class="secondary-btn">HTML出力</button>
+          </div>
+        </header>
+        <section class="search-panel" aria-label="検索とフィルター">
+          <div class="search-quick-row">
+            <label class="quick-keyword-label" for="filter-keyword">キーワード</label>
+            <input id="filter-keyword" class="quick-keyword-input" type="text" placeholder="タイトル/サマリー/GM/舞台/PC/NPC" />
+            <div class="search-actions-inline">
+              <button id="filter-detail-toggle-btn" class="secondary-btn" type="button" aria-expanded="false" aria-controls="filter-advanced-panel">詳細</button>
+            </div>
+            <span id="filter-status" class="filter-status">全件表示</span>
+          </div>
+
+          <div id="filter-advanced-panel" class="filter-advanced hidden">
+            <div class="search-row">
+              <label>
+                <span>タイトル</span>
+                <input id="filter-title" type="text" placeholder="タイトルを部分一致" />
+              </label>
+              <label>
+                <span>サマリー</span>
+                <input id="filter-summary" type="text" placeholder="サマリーを部分一致" />
+              </label>
+              <label>
+                <span>GM</span>
+                <input id="filter-gm" type="text" placeholder="GM名を部分一致" />
+              </label>
+              <label>
+                <span>キャラクター(PC/NPC)</span>
+                <input id="filter-character" type="text" placeholder="PC/NPC名を部分一致" />
+              </label>
+            </div>
+
+            <div class="tag-filter-layout">
+              <div class="tag-filter-left">
+                <label>
+                  <span>タグ</span>
+                  <input id="filter-tag-names" type="text" placeholder="例: メイン, 依頼" />
+                </label>
+                <label>
+                  <span>タグ条件</span>
+                  <select id="filter-tag-mode">
+                    <option value="or">OR(いずれか)</option>
+                    <option value="and">AND(すべて)</option>
+                  </select>
+                </label>
+              </div>
+              <div class="tag-filter-right">
+                <label class="filter-chip-field">
+                  <span>チップ選択</span>
+                  <div class="tag-chip-list filter-tag-chip-list" id="filter-tag-chips"></div>
+                </label>
+              </div>
+            </div>
+
+            <div class="tag-filter-layout">
+              <div class="tag-filter-left">
+                <label>
+                  <span>舞台</span>
+                  <input id="filter-stage-names" type="text" placeholder="例: N市, D市" />
+                </label>
+              </div>
+              <div class="tag-filter-right">
+                <label class="filter-chip-field">
+                  <span>チップ選択</span>
+                  <div class="tag-chip-list filter-tag-chip-list" id="filter-stage-chips"></div>
+                </label>
+              </div>
+            </div>
+
+            <div class="compact-row">
+              <label>
+                <span>年From</span>
+                <input id="filter-year-from" type="number" min="1" max="99" />
+              </label>
+              <label>
+                <span>年To</span>
+                <input id="filter-year-to" type="number" min="1" max="99" />
+              </label>
+              <label>
+                <span>月From</span>
+                <input id="filter-month-from" type="number" min="1" max="12" />
+              </label>
+              <label>
+                <span>月To</span>
+                <input id="filter-month-to" type="number" min="1" max="12" />
+              </label>
+            </div>
+
+            <div class="search-actions">
+              <button id="filter-reset-btn" class="secondary-btn" type="button">フィルター解除</button>
+            </div>
+          </div>
+        </section>
+        <div id="timeline" class="timeline"></div>
+      </main>
+
+      <aside class="sidebar right-panel">
+        <div class="panel-header">
+          <h2>詳細</h2>
+        </div>
+        <div id="detail-panel" class="detail-panel"></div>
+      </aside>
+    </div>
+
+    <template id="scenario-card-template">
+      <div class="scenario-card">
+        <div class="scenario-title"></div>
+        <div class="scenario-summary"></div>
+      </div>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
