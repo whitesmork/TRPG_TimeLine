@@ -2177,13 +2177,6 @@ function buildAvoidingOrthogonalPath(connection, cardRects, cards) {
     ]);
   };
 
-  if (Math.abs(connection.routeLane || 0) > 0.01) {
-    const preferredNoDetour = buildPreferredNoDetourPath();
-    if (!routeIntersectsAnyCard(preferredNoDetour, cardEntries, protectedCards)) {
-      return preferredNoDetour;
-    }
-  }
-
   if (preferVertical) {
     const sourceAboveTarget = sourceCenterY < targetCenterY;
     const start = sourceAboveTarget ? sourceRect.bottom : sourceRect.top;
@@ -2529,6 +2522,64 @@ function buildFallbackOrthogonalPath(connection, cardRects, cards) {
   return points;
 }
 
+function routesShareTrack(pointsA, pointsB) {
+  for (let indexA = 1; indexA < pointsA.length; indexA += 1) {
+    const startA = pointsA[indexA - 1];
+    const endA = pointsA[indexA];
+    const horizontalA = Math.abs(startA.y - endA.y) < 0.01;
+    const verticalA = Math.abs(startA.x - endA.x) < 0.01;
+    if (!horizontalA && !verticalA) continue;
+
+    for (let indexB = 1; indexB < pointsB.length; indexB += 1) {
+      const startB = pointsB[indexB - 1];
+      const endB = pointsB[indexB];
+      const horizontalB = Math.abs(startB.y - endB.y) < 0.01;
+      const verticalB = Math.abs(startB.x - endB.x) < 0.01;
+
+      if (horizontalA && horizontalB && Math.abs(startA.y - startB.y) < MIN_PARALLEL_ROUTE_GAP) {
+        const overlap = Math.min(Math.max(startA.x, endA.x), Math.max(startB.x, endB.x))
+          - Math.max(Math.min(startA.x, endA.x), Math.min(startB.x, endB.x));
+        if (overlap > 1) return true;
+      }
+
+      if (verticalA && verticalB && Math.abs(startA.x - startB.x) < MIN_PARALLEL_ROUTE_GAP) {
+        const overlap = Math.min(Math.max(startA.y, endA.y), Math.max(startB.y, endB.y))
+          - Math.max(Math.min(startA.y, endA.y), Math.min(startB.y, endB.y));
+        if (overlap > 1) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function buildParallelConnectionPaths(connections, cardRects, cards) {
+  const accepted = [];
+  const laneOrder = getPreferredLaneOrder(20);
+
+  connections
+    .slice()
+    .sort((a, b) => Math.abs(a.routeLane || 0) - Math.abs(b.routeLane || 0)
+      || a.scenarioA.id.localeCompare(b.scenarioA.id)
+      || a.scenarioB.id.localeCompare(b.scenarioB.id))
+    .forEach((connection) => {
+      const candidateLanes = [...new Set([connection.routeLane || 0, ...laneOrder])];
+      let selectedPoints = null;
+
+      candidateLanes.some((lane) => {
+        connection.routeLane = lane;
+        const points = buildAvoidingOrthogonalPath(connection, cardRects, cards)
+          || buildFallbackOrthogonalPath(connection, cardRects, cards);
+        if (accepted.some((entry) => routesShareTrack(points, entry.points))) return false;
+        selectedPoints = points;
+        return true;
+      });
+
+      accepted.push({ connection, points: selectedPoints || buildFallbackOrthogonalPath(connection, cardRects, cards) });
+    });
+
+  return accepted;
+}
+
 function toSvgPathData(points) {
   return points
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
@@ -2594,10 +2645,7 @@ function drawConnections(visibleScenarios = state.scenarios) {
   assignConnectionLanesPerCardEdge(connections);
   assignConnectionDetourLanes(connections);
 
-  connections.forEach((connection) => {
-    const points = buildAvoidingOrthogonalPath(connection, cardRects, cards)
-      || buildFallbackOrthogonalPath(connection, cardRects, cards);
-
+  buildParallelConnectionPaths(connections, cardRects, cards).forEach(({ connection, points }) => {
     const optimizedPoints = simplifyOrthogonalPoints(points);
     const d = toSvgPathData(optimizedPoints);
     appendConnectionPathElements(hitSvg, visualSvg, d, connection);
@@ -3644,13 +3692,6 @@ document.getElementById('export-btn').addEventListener('click', () => {
               end
             ]);
           };
-
-          if (Math.abs(connection.routeLane || 0) > 0.01) {
-            const preferredNoDetour = buildPreferredNoDetourPath();
-            if (!routeIntersectsAnyCard(preferredNoDetour, cardEntries, protectedCards)) {
-              return preferredNoDetour;
-            }
-          }
 
           if (preferVertical) {
             const sourceAboveTarget = sourceCenterY < targetCenterY;
