@@ -186,6 +186,16 @@ git push origin main
 - [js/persistence.js](js/persistence.js): JSON保存用データとファイルダウンロード
 - [README.md](README.md): 使用方法と公開・更新手順
 
+### 接続線テスト
+
+ブラウザで [tests/connection-routing.html](tests/connection-routing.html) を開くと、接続線ルールのテストを実行できます。
+
+Node.jsが利用できる環境では、次のコマンドでもテストできます。
+
+```bash
+node --test tests/connection-routing.test.js
+```
+
 ---
 
 ## 使い方の流れ

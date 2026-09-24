@@ -29,7 +29,7 @@ import {
   updateFilterStatus
 } from './js/filters.js';
 import { groupScenariosByMonth, sortMonthKeys } from './js/timeline-layout.js';
-import { getScenarioPairKey } from './js/connections.js';
+import { getScenarioPairKey, getConnectionEndpoints, isSameRelation } from './js/connections.js';
 import { getSelectedScenario } from './js/renderer.js';
 import { getScenarioFormMode, getRelationValue } from './js/modals.js';
 import { downloadFile, createJsonPayload } from './js/persistence.js';
@@ -1040,6 +1040,17 @@ function getStoryLaneKey(scenario) {
   return Array.isArray(scenario?.tags) && scenario.tags[0] ? scenario.tags[0] : '__untagged__';
 }
 
+function getStoryTag(scenario) {
+  const storyTagId = getStoryLaneKey(scenario);
+  return storyTagId === '__untagged__' ? null : getTagById(storyTagId);
+}
+
+function getConnectionColor(connection) {
+  const sourceTag = getStoryTag(connection.scenarioA);
+  const targetTag = getStoryTag(connection.scenarioB);
+  return sourceTag && targetTag ? sourceTag.color : null;
+}
+
 function computeStoryLaneLayout(scenarios) {
   const scenariosByMonth = new Map();
   scenarios.forEach((scenario) => {
@@ -1461,14 +1472,15 @@ function buildAxisCandidates(intervals, preferred, fallbackMin, fallbackMax, gap
   return uniqueSortedNumbers(candidates);
 }
 
-function scoreOrthogonalRoute(points, preferredAxisValue) {
+function scoreOrthogonalRoute(points, preferredAxisValue, preferVertical) {
   let length = 0;
   for (let index = 0; index < points.length - 1; index += 1) {
     length += Math.abs(points[index].x - points[index + 1].x) + Math.abs(points[index].y - points[index + 1].y);
   }
 
   const bendPenalty = Math.max(0, points.length - 2) * 12;
-  const axisPenalty = preferredAxisValue == null ? 0 : Math.abs((points[1]?.x ?? points[1]?.y ?? preferredAxisValue) - preferredAxisValue);
+  const axisValue = preferVertical ? points[1]?.x : points[1]?.y;
+  const axisPenalty = preferredAxisValue == null || axisValue == null ? 0 : Math.abs(axisValue - preferredAxisValue);
   return length + bendPenalty + axisPenalty;
 }
 
@@ -1500,7 +1512,7 @@ function simplifyOrthogonalPoints(points) {
 
 const DETOUR_LANE_SPACING = 12;
 const MIN_PARALLEL_ROUTE_GAP = 12;
-const DETOUR_STEM_LENGTH = 12;
+const DETOUR_STEM_LENGTH = 8;
 
 function rangesOverlap(minA, maxA, minB, maxB, margin = 0) {
   return maxA >= minB - margin && maxB >= minA - margin;
@@ -1684,7 +1696,7 @@ function buildAvoidingOrthogonalPath(connection, cardRects, cards) {
         return;
       }
 
-      const score = scoreOrthogonalRoute(points, preferredAxisValue);
+      const score = scoreOrthogonalRoute(points, preferredAxisValue, preferVertical);
       if (!best || score < best.score) {
         best = { points, score };
       }
@@ -1718,8 +1730,8 @@ function buildAvoidingOrthogonalPath(connection, cardRects, cards) {
       return simplifyOrthogonalPoints([
         start,
         startExit,
-        { x: bridgeX, y: startExit.y },
-        { x: bridgeX, y: endExit.y },
+        { x: bridgeX + detourOffset, y: startExit.y },
+        { x: bridgeX + detourOffset, y: endExit.y },
         endExit,
         end
       ]);
@@ -1746,8 +1758,8 @@ function buildAvoidingOrthogonalPath(connection, cardRects, cards) {
     return simplifyOrthogonalPoints([
       start,
       startExit,
-      { x: startExit.x, y: bridgeY },
-      { x: endExit.x, y: bridgeY },
+      { x: startExit.x, y: bridgeY + detourOffset },
+      { x: endExit.x, y: bridgeY + detourOffset },
       endExit,
       end
     ]);
@@ -1765,6 +1777,7 @@ function buildAvoidingOrthogonalPath(connection, cardRects, cards) {
     const axisCandidates = buildAxisCandidates(intervals, preferred, 24, Math.max(24, Math.max(...cardRects.map((rect) => rect.right), 0) + 64));
     const bestVertical = evaluateCandidates(buildVertical, axisCandidates, preferred);
     if (bestVertical) return bestVertical;
+    return null;
   }
 
   {
@@ -2004,25 +2017,16 @@ function collectConnections(cards, visibleMap, timelineRect, validPairIds) {
 
       const rectA = getRectFromCard(a, timelineRect);
       const rectB = getRectFromCard(b, timelineRect);
-      const sameRow = Math.abs(rectA.cy - rectB.cy) < 0.01;
-      const preferVertical = !sameRow;
-      const sourceAboveTarget = rectA.cy < rectB.cy;
-      const sourceLeftOfTarget = rectA.cx < rectB.cx;
+      const sameRelation = isSameRelation(scenarioA, scenarioB);
+      const endpoints = getConnectionEndpoints(rectA, rectB, sameRelation);
 
       connections.push({
         a,
         b,
         rectA,
         rectB,
-        preferVertical,
-        sourceAboveTarget,
-        sourceLeftOfTarget,
-        startEdge: preferVertical
-          ? (sourceAboveTarget ? 'bottom' : 'top')
-          : (sourceLeftOfTarget ? 'right' : 'left'),
-        endEdge: preferVertical
-          ? (sourceAboveTarget ? 'top' : 'bottom')
-          : (sourceLeftOfTarget ? 'left' : 'right'),
+        sameRelation,
+        ...endpoints,
         startLane: 0,
         endLane: 0,
         scenarioA,
@@ -2099,14 +2103,14 @@ function buildFallbackOrthogonalPath(connection, cardRects, cards) {
 }
 
 function routesShareTrack(pointsA, pointsB) {
-  for (let indexA = 1; indexA < pointsA.length; indexA += 1) {
+  for (let indexA = 2; indexA < pointsA.length - 1; indexA += 1) {
     const startA = pointsA[indexA - 1];
     const endA = pointsA[indexA];
     const horizontalA = Math.abs(startA.y - endA.y) < 0.01;
     const verticalA = Math.abs(startA.x - endA.x) < 0.01;
     if (!horizontalA && !verticalA) continue;
 
-    for (let indexB = 1; indexB < pointsB.length; indexB += 1) {
+    for (let indexB = 2; indexB < pointsB.length - 1; indexB += 1) {
       const startB = pointsB[indexB - 1];
       const endB = pointsB[indexB];
       const horizontalB = Math.abs(startB.y - endB.y) < 0.01;
@@ -2177,13 +2181,243 @@ function appendConnectionPathElements(hitSvg, visualSvg, d, connection) {
   path.setAttribute('d', d);
   path.setAttribute('class', 'connection-line strong');
   path.setAttribute('pointer-events', 'none');
+  const connectionColor = getConnectionColor(connection);
+  if (connectionColor) path.style.stroke = connectionColor;
   visualSvg.appendChild(path);
+}
+
+const ROUTE_CLEARANCE = 10;
+const ROUTE_PARALLEL_GAP = 8;
+const ROUTE_STEM_LENGTHS = [DETOUR_STEM_LENGTH];
+const ROUTE_ALIGNMENT_TOLERANCE = 4;
+
+function getRouteMiddleSegment(points) {
+  if (!Array.isArray(points) || points.length < 4) return null;
+  return { start: points[2], end: points[3] };
+}
+
+function getAxisValue(segment, preferVertical) {
+  return preferVertical ? segment.start.x : segment.start.y;
+}
+
+function isAlignedConnection(connection) {
+  return connection.preferVertical
+    ? Math.abs(connection.rectA.cx - connection.rectB.cx) <= ROUTE_ALIGNMENT_TOLERANCE
+    : Math.abs(connection.rectA.cy - connection.rectB.cy) <= ROUTE_ALIGNMENT_TOLERANCE;
+}
+
+function rangesOverlapWithGap(minA, maxA, minB, maxB, gap = 0) {
+  return maxA >= minB - gap && maxB >= minA - gap;
+}
+
+function routeSegmentsConflict(first, second, gap = ROUTE_PARALLEL_GAP) {
+  const firstHorizontal = Math.abs(first.start.y - first.end.y) < 0.01;
+  const secondHorizontal = Math.abs(second.start.y - second.end.y) < 0.01;
+  const firstVertical = Math.abs(first.start.x - first.end.x) < 0.01;
+  const secondVertical = Math.abs(second.start.x - second.end.x) < 0.01;
+
+  if (firstHorizontal && secondHorizontal) {
+    return Math.abs(first.start.y - second.start.y) < gap
+      && rangesOverlapWithGap(
+        Math.min(first.start.x, first.end.x),
+        Math.max(first.start.x, first.end.x),
+        Math.min(second.start.x, second.end.x),
+        Math.max(second.start.x, second.end.x),
+        0
+      );
+  }
+
+  if (firstVertical && secondVertical) {
+    return Math.abs(first.start.x - second.start.x) < gap
+      && rangesOverlapWithGap(
+        Math.min(first.start.y, first.end.y),
+        Math.max(first.start.y, first.end.y),
+        Math.min(second.start.y, second.end.y),
+        Math.max(second.start.y, second.end.y),
+        0
+      );
+  }
+
+  // Crossing perpendicular segments do not share a track. Only parallel
+  // segments are reserved to keep the middle lines visually separated.
+  return false;
+}
+
+function buildRouteAxisCandidates(connection, cardRects, reservedSegments) {
+  const preferVertical = connection.preferVertical;
+  const preferredAxis = preferVertical
+    ? (connection.rectA.cx + connection.rectB.cx) / 2
+    : (connection.rectA.cy + connection.rectB.cy) / 2;
+  const candidates = [preferredAxis, 24];
+  for (let step = 1; step <= 8; step += 1) {
+    const offset = ROUTE_PARALLEL_GAP * step;
+    candidates.push(preferredAxis - offset, preferredAxis + offset);
+  }
+
+  cardRects.forEach((rect) => {
+    if (preferVertical) {
+      candidates.push(rect.left - ROUTE_CLEARANCE, rect.right + ROUTE_CLEARANCE);
+    } else {
+      candidates.push(rect.top - ROUTE_CLEARANCE, rect.bottom + ROUTE_CLEARANCE);
+    }
+  });
+
+  reservedSegments.forEach((reserved) => {
+    const axis = getAxisValue(reserved.segment, preferVertical);
+    candidates.push(axis - ROUTE_PARALLEL_GAP, axis + ROUTE_PARALLEL_GAP);
+  });
+
+  const maxAxis = preferVertical
+    ? Math.max(...cardRects.map((rect) => rect.right), 0)
+    : Math.max(...cardRects.map((rect) => rect.bottom), 0);
+  const minAxis = preferVertical
+    ? Math.min(...cardRects.map((rect) => rect.left), 0)
+    : Math.min(...cardRects.map((rect) => rect.top), 0);
+  candidates.push(minAxis - 64);
+  candidates.push(maxAxis + 64);
+
+  return uniqueSortedNumbers(candidates);
+}
+
+function buildRouteCandidate(connection, axisValue, stemLength) {
+  const { rectA, rectB, preferVertical } = connection;
+  const sourceAboveTarget = rectA.cy < rectB.cy;
+  const sourceLeftOfTarget = rectA.cx < rectB.cx;
+
+  if (preferVertical) {
+    const start = { x: rectA.cx, y: sourceAboveTarget ? rectA.bottom : rectA.top };
+    const end = { x: rectB.cx, y: sourceAboveTarget ? rectB.top : rectB.bottom };
+    const startExit = { x: start.x, y: sourceAboveTarget ? start.y + stemLength : start.y - stemLength };
+    const endExit = { x: end.x, y: sourceAboveTarget ? end.y - stemLength : end.y + stemLength };
+    return [
+      start,
+      startExit,
+      { x: axisValue, y: startExit.y },
+      { x: axisValue, y: endExit.y },
+      endExit,
+      end
+    ];
+  }
+
+  const start = { x: sourceLeftOfTarget ? rectA.right : rectA.left, y: rectA.cy };
+  const end = { x: sourceLeftOfTarget ? rectB.left : rectB.right, y: rectB.cy };
+  const startExit = { x: sourceLeftOfTarget ? start.x + stemLength : start.x - stemLength, y: start.y };
+  const endExit = { x: sourceLeftOfTarget ? end.x - stemLength : end.x + stemLength, y: end.y };
+  return [
+    start,
+    startExit,
+    { x: startExit.x, y: axisValue },
+    { x: endExit.x, y: axisValue },
+    endExit,
+    end
+  ];
+}
+
+function scoreRoute(points, preferredAxis, preferVertical) {
+  let length = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    length += Math.abs(points[index - 1].x - points[index].x)
+      + Math.abs(points[index - 1].y - points[index].y);
+  }
+  const branchDistance = preferVertical
+    ? Math.abs((points[2]?.x ?? 0) - (points[1]?.x ?? 0))
+    : Math.abs((points[2]?.y ?? 0) - (points[1]?.y ?? 0));
+  const axis = preferVertical ? points[2]?.x : points[2]?.y;
+  const totalRouteScore = length + Math.max(0, points.length - 2) * 8 + Math.abs(axis - preferredAxis) * 0.2;
+  return branchDistance * 1000 + totalRouteScore;
+}
+
+function findBestRoute(connection, cardRects, cards, reservedSegments) {
+  const protectedCards = new Set([connection.a, connection.b]);
+  const cardEntries = cardRects.map((rect, index) => ({ rect, card: cards[index] }));
+  const preferredAxis = connection.preferVertical
+    ? (connection.rectA.cx + connection.rectB.cx) / 2
+    : (connection.rectA.cy + connection.rectB.cy) / 2;
+  const candidates = buildRouteAxisCandidates(connection, cardRects, reservedSegments);
+  let best = null;
+
+  if (isAlignedConnection(connection)) {
+    const alignedRawPoints = buildRouteCandidate(
+      connection,
+      preferredAxis,
+      DETOUR_STEM_LENGTH
+    );
+    const alignedPoints = simplifyOrthogonalPoints(alignedRawPoints);
+    const alignedSegment = getRouteMiddleSegment(alignedRawPoints);
+    const alignedIsClear = !routeIntersectsAnyCard(alignedPoints, cardEntries, protectedCards)
+      && alignedSegment
+      && !reservedSegments.some((reserved) => (
+        isAlignedConnection(reserved.connection)
+        && routeSegmentsConflict(alignedSegment, reserved.segment)
+      ));
+
+    if (alignedIsClear) {
+      return { points: alignedPoints, middleSegment: alignedSegment, score: 0 };
+    }
+  }
+
+  candidates.forEach((axisValue) => {
+    ROUTE_STEM_LENGTHS.forEach((stemLength) => {
+      const rawPoints = buildRouteCandidate(connection, axisValue, stemLength);
+      const points = simplifyOrthogonalPoints(rawPoints);
+      if (routeIntersectsAnyCard(points, cardEntries, protectedCards)) return;
+
+      const middleSegment = getRouteMiddleSegment(rawPoints);
+      if (!middleSegment || reservedSegments.some((reserved) => routeSegmentsConflict(
+        middleSegment,
+        reserved.segment
+      ))) return;
+
+      const score = scoreRoute(points, preferredAxis, connection.preferVertical);
+      if (!best || score < best.score) {
+        best = { points, middleSegment, score };
+      }
+    });
+  });
+
+  return best;
+}
+
+function routeConnectionsWithoutOverlap(connections, cardRects, cards) {
+  const reservedSegments = [];
+  const routed = [];
+
+  connections
+    .slice()
+    .sort((a, b) => {
+      const directnessA = a.preferVertical
+        ? Math.abs(a.rectA.cx - a.rectB.cx)
+        : Math.abs(a.rectA.cy - a.rectB.cy);
+      const directnessB = b.preferVertical
+        ? Math.abs(b.rectA.cx - b.rectB.cx)
+        : Math.abs(b.rectA.cy - b.rectB.cy);
+      if (Math.abs(directnessA - directnessB) > 0.01) {
+        return directnessA - directnessB;
+      }
+
+      const distanceA = Math.abs(a.rectA.cx - a.rectB.cx) + Math.abs(a.rectA.cy - a.rectB.cy);
+      const distanceB = Math.abs(b.rectA.cx - b.rectB.cx) + Math.abs(b.rectA.cy - b.rectB.cy);
+      return distanceA - distanceB || a.scenarioA.id.localeCompare(b.scenarioA.id);
+    })
+    .forEach((connection) => {
+      const fallbackStemLength = DETOUR_STEM_LENGTH;
+      const best = findBestRoute(connection, cardRects, cards, reservedSegments)
+        || { points: buildRouteCandidate(connection, connection.preferVertical
+          ? (connection.rectA.cx + connection.rectB.cx) / 2
+          : (connection.rectA.cy + connection.rectB.cy) / 2, fallbackStemLength) };
+      const middleSegment = best.middleSegment || getRouteMiddleSegment(best.points);
+      if (middleSegment) reservedSegments.push({ segment: middleSegment, connection });
+      routed.push({ connection, points: best.points });
+    });
+
+  return routed;
 }
 
 function drawConnections(visibleScenarios = state.scenarios) {
   ensureConnectionTooltip();
 
   const zoomLayer = timelineEl.querySelector('.timeline-zoom-layer') || timelineEl;
+  zoomLayer.querySelectorAll('.timeline-overlay').forEach((overlay) => overlay.remove());
   const visualSvg = createConnectionLayerSvg('timeline-overlay');
   const hitSvg = createConnectionLayerSvg('timeline-overlay hit-overlay');
   const overlayWidth = Math.max(zoomLayer.clientWidth, zoomLayer.scrollWidth);
@@ -2218,10 +2452,7 @@ function drawConnections(visibleScenarios = state.scenarios) {
   const validPairIds = getSharedParticipantPairIdsByVisualOrder(positionedScenarios);
   const connections = collectConnections(cards, visibleMap, timelineRect, validPairIds);
 
-  assignConnectionLanesPerCardEdge(connections);
-  assignConnectionDetourLanes(connections);
-
-  buildParallelConnectionPaths(connections, cardRects, cards).forEach(({ connection, points }) => {
+  routeConnectionsWithoutOverlap(connections, cardRects, cards).forEach(({ connection, points }) => {
     const optimizedPoints = simplifyOrthogonalPoints(points);
     const d = toSvgPathData(optimizedPoints);
     appendConnectionPathElements(hitSvg, visualSvg, d, connection);
@@ -2367,7 +2598,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
         --panel-border: #dce3f0;
         --text: #1f2a37;
         --muted: #6b7280;
-        --line-strong: #4f6ae7;
+        --line-strong: #4a4f58;
       }
 
       * { box-sizing: border-box; }
@@ -3002,7 +3233,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
         const DETOUR_LANE_SPACING = 12;
         const MIN_PARALLEL_ROUTE_GAP = 12;
-        const DETOUR_STEM_LENGTH = 12;
+        const DETOUR_STEM_LENGTH = 8;
 
         function rangesOverlap(minA, maxA, minB, maxB, margin = 0) {
           return maxA >= minB - margin && maxB >= minA - margin;
@@ -3219,8 +3450,8 @@ document.getElementById('export-btn').addEventListener('click', () => {
               return simplifyOrthogonalPoints([
                 start,
                 startExit,
-                { x: bridgeX, y: startExit.y },
-                { x: bridgeX, y: endExit.y },
+                { x: bridgeX + detourOffset, y: startExit.y },
+                { x: bridgeX + detourOffset, y: endExit.y },
                 endExit,
                 end
               ]);
@@ -3247,8 +3478,8 @@ document.getElementById('export-btn').addEventListener('click', () => {
             return simplifyOrthogonalPoints([
               start,
               startExit,
-              { x: startExit.x, y: bridgeY },
-              { x: endExit.x, y: bridgeY },
+              { x: startExit.x, y: bridgeY + detourOffset },
+              { x: endExit.x, y: bridgeY + detourOffset },
               endExit,
               end
             ]);
@@ -3266,6 +3497,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
             const axisCandidates = buildAxisCandidates(intervals, preferred, 24, Math.max(24, Math.max(...cardRects.map((rect) => rect.right), 0) + 64));
             const bestVertical = evaluateCandidates(buildVertical, axisCandidates, preferred);
             if (bestVertical) return bestVertical;
+            return null;
           }
 
           {
@@ -3430,8 +3662,11 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
               const rectA = getRectFromCard(a, timelineRect);
               const rectB = getRectFromCard(b, timelineRect);
-              const sameRow = Math.abs(rectA.cy - rectB.cy) < 0.01;
-              const preferVertical = !sameRow;
+              const sameRelation = scenarioA.placement && scenarioA.placement.relation === 'same'
+                && scenarioA.placement.referenceScenarioId === scenarioB.id
+                || scenarioB.placement && scenarioB.placement.relation === 'same'
+                && scenarioB.placement.referenceScenarioId === scenarioA.id;
+              const preferVertical = !sameRelation;
               const sourceAboveTarget = rectA.cy < rectB.cy;
               const sourceLeftOfTarget = rectA.cx < rectB.cx;
 
@@ -3558,6 +3793,12 @@ document.getElementById('export-btn').addEventListener('click', () => {
           path.setAttribute('d', d);
           path.setAttribute('class', 'connection-line');
           path.setAttribute('pointer-events', 'none');
+          const exportTags = window.__exportTags || [];
+          const sourceTags = getScenarioTags(connection.scenarioA, exportTags);
+          const targetTags = getScenarioTags(connection.scenarioB, exportTags);
+          if (sourceTags.length && targetTags.length) {
+            path.style.stroke = sourceTags[0].color;
+          }
           visualSvg.appendChild(path);
         }
 
@@ -4205,8 +4446,11 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
               const rectA = getRectFromCard(a, timelineRect);
               const rectB = getRectFromCard(b, timelineRect);
-              const sameRow = Math.abs(rectA.cy - rectB.cy) < 0.01;
-              const preferVertical = !sameRow;
+              const sameRelation = scenarioA.placement && scenarioA.placement.relation === 'same'
+                && scenarioA.placement.referenceScenarioId === scenarioB.id
+                || scenarioB.placement && scenarioB.placement.relation === 'same'
+                && scenarioB.placement.referenceScenarioId === scenarioA.id;
+              const preferVertical = !sameRelation;
               const sourceAboveTarget = rectA.cy < rectB.cy;
               const sourceLeftOfTarget = rectA.cx < rectB.cx;
 
@@ -4291,6 +4535,12 @@ document.getElementById('export-btn').addEventListener('click', () => {
           path.setAttribute('d', d);
           path.setAttribute('class', 'connection-line');
           path.setAttribute('pointer-events', 'none');
+          const exportTags = window.__exportTags || [];
+          const sourceTags = getScenarioTags(connection.scenarioA, exportTags);
+          const targetTags = getScenarioTags(connection.scenarioB, exportTags);
+          if (sourceTags.length && targetTags.length) {
+            path.style.stroke = sourceTags[0].color;
+          }
           visualSvg.appendChild(path);
         }
 
@@ -4326,11 +4576,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
           const validPairIds = getSharedParticipantPairIdsByVisualOrder(positionedScenarios);
           const connections = collectConnections(cards, visibleMap, timelineRect, validPairIds);
-          assignConnectionLanesPerCardEdge(connections);
-          assignConnectionDetourLanes(connections);
-
-          connections.forEach((connection) => {
-            const points = buildAvoidingOrthogonalPath(connection, cardRects, cards) || buildFallbackOrthogonalPath(connection, cardRects, cards);
+          routeExportConnections(connections, cardRects, cards).forEach(({ connection, points }) => {
             const optimizedPoints = simplifyOrthogonalPoints(points);
             const d = toSvgPathData(optimizedPoints);
             appendConnectionPathElements(hitSvg, visualSvg, d, connection);
@@ -4338,6 +4584,89 @@ document.getElementById('export-btn').addEventListener('click', () => {
 
           timelineEl.appendChild(visualSvg);
           timelineEl.appendChild(hitSvg);
+        }
+
+        function getExportMiddleSegments(points) {
+          const segments = [];
+          for (let index = 1; index < points.length - 2; index += 1) {
+            const start = points[index];
+            const end = points[index + 1];
+            if (Math.abs(start.x - end.x) >= 0.01 || Math.abs(start.y - end.y) >= 0.01) {
+              segments.push({ start, end });
+            }
+          }
+          return segments;
+        }
+
+        function exportSegmentsConflict(first, second, gap = 8) {
+          const firstHorizontal = Math.abs(first.start.y - first.end.y) < 0.01;
+          const secondHorizontal = Math.abs(second.start.y - second.end.y) < 0.01;
+          const firstVertical = Math.abs(first.start.x - first.end.x) < 0.01;
+          const secondVertical = Math.abs(second.start.x - second.end.x) < 0.01;
+          if (firstHorizontal && secondHorizontal) {
+            return Math.abs(first.start.y - second.start.y) < gap
+              && Math.max(first.start.x, first.end.x) >= Math.min(second.start.x, second.end.x)
+              && Math.max(second.start.x, second.end.x) >= Math.min(first.start.x, first.end.x);
+          }
+          if (firstVertical && secondVertical) {
+            return Math.abs(first.start.x - second.start.x) < gap
+              && Math.max(first.start.y, first.end.y) >= Math.min(second.start.y, second.end.y)
+              && Math.max(second.start.y, second.end.y) >= Math.min(first.start.y, first.end.y);
+          }
+          return false;
+        }
+
+        function buildExportCandidate(connection, axis) {
+          const rectA = connection.rectA;
+          const rectB = connection.rectB;
+          const stemLength = 8;
+          if (connection.preferVertical) {
+            const above = rectA.cy < rectB.cy;
+            const start = { x: rectA.cx, y: above ? rectA.bottom : rectA.top };
+            const end = { x: rectB.cx, y: above ? rectB.top : rectB.bottom };
+            const startExit = { x: start.x, y: above ? start.y + stemLength : start.y - stemLength };
+            const endExit = { x: end.x, y: above ? end.y - stemLength : end.y + stemLength };
+            return [start, startExit, { x: axis, y: startExit.y }, { x: axis, y: endExit.y }, endExit, end];
+          }
+          const left = rectA.cx < rectB.cx;
+          const start = { x: left ? rectA.right : rectA.left, y: rectA.cy };
+          const end = { x: left ? rectB.left : rectB.right, y: rectB.cy };
+          const startExit = { x: left ? start.x + stemLength : start.x - stemLength, y: start.y };
+          const endExit = { x: left ? end.x - stemLength : end.x + stemLength, y: end.y };
+          return [start, startExit, { x: startExit.x, y: axis }, { x: endExit.x, y: axis }, endExit, end];
+        }
+
+        function routeExportConnections(connections, cardRects, cards) {
+          const cardEntries = cardRects.map((rect, index) => ({ rect, card: cards[index] }));
+          const reserved = [];
+          return connections
+            .slice()
+            .sort((a, b) => {
+              const directA = a.preferVertical ? Math.abs(a.rectA.cx - a.rectB.cx) : Math.abs(a.rectA.cy - a.rectB.cy);
+              const directB = b.preferVertical ? Math.abs(b.rectA.cx - b.rectB.cx) : Math.abs(b.rectA.cy - b.rectB.cy);
+              return directA - directB;
+            })
+            .map((connection) => {
+              const preferredAxis = connection.preferVertical
+                ? (connection.rectA.cx + connection.rectB.cx) / 2
+                : (connection.rectA.cy + connection.rectB.cy) / 2;
+              const axes = [preferredAxis, connection.preferVertical ? connection.rectA.cx : connection.rectA.cy, connection.preferVertical ? connection.rectB.cx : connection.rectB.cy];
+              for (let step = 1; step <= 8; step += 1) axes.push(preferredAxis - step * 8, preferredAxis + step * 8);
+              let best = null;
+              axes.forEach((axis) => {
+                const raw = buildExportCandidate(connection, axis);
+                const points = simplifyOrthogonalPoints(raw);
+                if (routeIntersectsAnyCard(points, cardEntries, new Set([connection.a, connection.b]))) return;
+                const middle = getExportMiddleSegments(raw);
+                if (middle.some((segment) => reserved.some((item) => exportSegmentsConflict(segment, item.segment)))) return;
+                const branchDistance = connection.preferVertical ? Math.abs(axis - connection.rectA.cx) : Math.abs(axis - connection.rectA.cy);
+                const score = branchDistance * 1000 + Math.abs(axis - preferredAxis);
+                if (!best || score < best.score) best = { points, middle, score };
+              });
+              const result = best || { points: buildExportCandidate(connection, preferredAxis), middle: [] };
+              result.middle.forEach((segment) => reserved.push({ segment }));
+              return { connection, points: result.points };
+            });
         }
 
         function main() {
@@ -4352,6 +4681,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
             }
 
             const tags = Array.isArray(parsed.tags) ? parsed.tags.map(normalizeTag) : [];
+            window.__exportTags = tags;
             const scenarios = Array.isArray(parsed.scenarios) ? parsed.scenarios.map(normalizeScenario) : [];
             const byId = new Map(scenarios.map((s) => [s.id, s]));
             let selectedId = scenarios[0] ? scenarios[0].id : null;
