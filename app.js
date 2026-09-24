@@ -1,56 +1,38 @@
-const state = {
-  scenarios: [],
-  tags: [],
-  selectedScenarioId: null,
-  search: {
-    keyword: '',
-    title: '',
-    summary: '',
-    gm: '',
-    character: '',
-    tagIds: [],
-    stageNames: [],
-    stage: '',
-    tagMode: 'or',
-    yearFrom: '',
-    yearTo: '',
-    monthFrom: '',
-    monthTo: '',
-    active: false,
-    resultIds: []
-  }
-};
-
-const timelineEl = document.getElementById('timeline');
-const timelineZoomState = {
-  scale: 1,
-  min: 0.7,
-  max: 1.8
-};
-const scenarioListEl = document.getElementById('scenario-list');
-const detailPanelEl = document.getElementById('detail-panel');
-const filterKeywordEl = document.getElementById('filter-keyword');
-const filterTitleEl = document.getElementById('filter-title');
-const filterSummaryEl = document.getElementById('filter-summary');
-const filterGmEl = document.getElementById('filter-gm');
-const filterCharacterEl = document.getElementById('filter-character');
-const filterTagNamesEl = document.getElementById('filter-tag-names');
-const filterTagChipsEl = document.getElementById('filter-tag-chips');
-const filterStageNamesEl = document.getElementById('filter-stage-names');
-const filterStageChipsEl = document.getElementById('filter-stage-chips');
-const filterTagModeEl = document.getElementById('filter-tag-mode');
-const filterYearFromEl = document.getElementById('filter-year-from');
-const filterYearToEl = document.getElementById('filter-year-to');
-const filterMonthFromEl = document.getElementById('filter-month-from');
-const filterMonthToEl = document.getElementById('filter-month-to');
-const filterDetailToggleBtn = document.getElementById('filter-detail-toggle-btn');
-const filterAdvancedPanelEl = document.getElementById('filter-advanced-panel');
-const filterResetBtn = document.getElementById('filter-reset-btn');
-const filterStatusEl = document.getElementById('filter-status');
-
-function getScenarioById(id) {
-  return state.scenarios.find((s) => s.id === id);
-}
+import {
+  state,
+  timelineEl,
+  scenarioListEl,
+  detailPanelEl,
+  timelineZoomState
+} from './js/state.js';
+import {
+  getScenarioById,
+  getMonthKey,
+  getMonthLabel,
+  getParticipants,
+  getSharedParticipants,
+  hasSameParticipantName,
+  getScenarioDateValue,
+  parseParticipants,
+  normalizeScenarios,
+  parseTagNames,
+  getTagIdsFromNames,
+  getTagById,
+  getScenarioTags,
+  getScenarioTagGradient,
+  normalizeTag
+} from './js/scenario-data.js';
+import {
+  initializeFilters,
+  refreshFilterOptions,
+  updateSearchState as updateSearchStateFromFilters,
+  updateFilterStatus
+} from './js/filters.js';
+import { groupScenariosByMonth, sortMonthKeys } from './js/timeline-layout.js';
+import { getScenarioPairKey } from './js/connections.js';
+import { getSelectedScenario } from './js/renderer.js';
+import { getScenarioFormMode, getRelationValue } from './js/modals.js';
+import { downloadFile, createJsonPayload } from './js/persistence.js';
 
 function getVisibleScenarios() {
   if (!state.search.active) {
@@ -59,122 +41,6 @@ function getVisibleScenarios() {
 
   const idSet = new Set(state.search.resultIds);
   return state.scenarios.filter((scenario) => idSet.has(scenario.id));
-}
-
-function normalizeSearchNumber(value, min, max) {
-  const num = Number.parseInt(String(value ?? '').trim(), 10);
-  if (Number.isNaN(num)) return null;
-  return Math.max(min, Math.min(max, num));
-}
-
-function getFilterTagIdsFromNames(tagNames) {
-  return tagNames.map((tagName) => {
-    const tagId = state.tags.find((tag) => tag.name === tagName)?.id;
-    return tagId || `missing:${tagName}`;
-  });
-}
-
-function getSearchFieldValues() {
-  const selectedTagNames = parseTagNames(filterTagNamesEl?.value || '');
-  return {
-    keyword: (filterKeywordEl?.value || '').trim().toLowerCase(),
-    title: (filterTitleEl?.value || '').trim().toLowerCase(),
-    summary: (filterSummaryEl?.value || '').trim().toLowerCase(),
-    gm: (filterGmEl?.value || '').trim().toLowerCase(),
-    character: (filterCharacterEl?.value || '').trim().toLowerCase(),
-    tagIds: getFilterTagIdsFromNames(selectedTagNames),
-    stage: (filterStageNamesEl?.value || '').trim().toLowerCase(),
-    stageNames: parseTagNames(filterStageNamesEl?.value || ''),
-    tagMode: filterTagModeEl?.value === 'and' ? 'and' : 'or',
-    yearFrom: normalizeSearchNumber(filterYearFromEl?.value, 1, 99),
-    yearTo: normalizeSearchNumber(filterYearToEl?.value, 1, 99),
-    monthFrom: normalizeSearchNumber(filterMonthFromEl?.value, 1, 12),
-    monthTo: normalizeSearchNumber(filterMonthToEl?.value, 1, 12)
-  };
-}
-
-function isSearchActive(searchValues) {
-  return Boolean(
-    searchValues.keyword ||
-    searchValues.title ||
-    searchValues.summary ||
-    searchValues.gm ||
-    searchValues.character ||
-    searchValues.tagIds.length ||
-    searchValues.stageNames.length ||
-    searchValues.yearFrom !== null ||
-    searchValues.yearTo !== null ||
-    searchValues.monthFrom !== null ||
-    searchValues.monthTo !== null
-  );
-}
-
-function matchesTextField(value, query) {
-  if (!query) return true;
-  return String(value || '').toLowerCase().includes(query);
-}
-
-function matchesKeyword(scenario, keyword) {
-  if (!keyword) return true;
-  const haystack = [
-    scenario.title,
-    scenario.summary,
-    scenario.stage,
-    scenario.gm,
-    ...(scenario.pcs || []),
-    ...(scenario.npcs || [])
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-  return haystack.includes(keyword);
-}
-
-function matchesTagFilter(scenario, tagIds, mode) {
-  if (!tagIds.length) return true;
-  const scenarioTagSet = new Set(Array.isArray(scenario.tags) ? scenario.tags : []);
-  if (mode === 'and') {
-    return tagIds.every((tagId) => scenarioTagSet.has(tagId));
-  }
-  return tagIds.some((tagId) => scenarioTagSet.has(tagId));
-}
-
-function matchesStageFilter(scenario, stageNames) {
-  if (!stageNames.length) return true;
-  const normalizedStageNames = stageNames.map((stageName) => String(stageName).trim().toLowerCase()).filter(Boolean);
-  if (!normalizedStageNames.length) return true;
-  const scenarioStageText = String(scenario.stage || '').trim().toLowerCase();
-  return normalizedStageNames.some((stageName) => scenarioStageText.includes(stageName));
-}
-
-function matchesDateFilter(scenario, searchValues) {
-  if (searchValues.yearFrom !== null && scenario.year < searchValues.yearFrom) {
-    return false;
-  }
-  if (searchValues.yearTo !== null && scenario.year > searchValues.yearTo) {
-    return false;
-  }
-  if (searchValues.monthFrom !== null && scenario.month < searchValues.monthFrom) {
-    return false;
-  }
-  if (searchValues.monthTo !== null && scenario.month > searchValues.monthTo) {
-    return false;
-  }
-  return true;
-}
-
-function matchesScenario(scenario, searchValues) {
-  const joinedCharacters = [...(scenario.pcs || []), ...(scenario.npcs || [])].join(' ').toLowerCase();
-
-  return matchesDateFilter(scenario, searchValues)
-    && matchesTextField(scenario.title, searchValues.title)
-    && matchesTextField(scenario.summary, searchValues.summary)
-    && matchesTextField(scenario.gm, searchValues.gm)
-    && matchesTextField(scenario.stage, searchValues.stage)
-    && (!searchValues.character || joinedCharacters.includes(searchValues.character))
-    && matchesTagFilter(scenario, searchValues.tagIds, searchValues.tagMode)
-    && matchesStageFilter(scenario, searchValues.stageNames)
-    && matchesKeyword(scenario, searchValues.keyword);
 }
 
 function syncSelectedScenarioToVisible() {
@@ -191,181 +57,9 @@ function syncSelectedScenarioToVisible() {
   }
 }
 
-function updateFilterStatus() {
-  if (!filterStatusEl) return;
-  const total = state.scenarios.length;
-  const visibleCount = getVisibleScenarios().length;
-
-  if (!state.search.active) {
-    filterStatusEl.textContent = `全件表示 ${total}件`;
-    filterStatusEl.classList.remove('active');
-    return;
-  }
-
-  filterStatusEl.textContent = `検索中 ${visibleCount}/${total}件`;
-  filterStatusEl.classList.add('active');
-}
-
-function refreshFilterTagOptions() {
-  if (!filterTagChipsEl || !filterTagNamesEl) return;
-
-  const selectedNames = parseTagNames(filterTagNamesEl.value);
-  const selectedSet = new Set(selectedNames);
-  filterTagChipsEl.innerHTML = state.tags
-    .map((tag) => {
-      const isSelected = selectedSet.has(tag.name);
-      return `<button type="button" class="tag-chip ${isSelected ? 'selected' : ''}" data-tag-name="${tag.name}" style="--chip-color:${tag.color};">${tag.name}</button>`;
-    })
-    .join('');
-
-  filterTagChipsEl.querySelectorAll('.tag-chip').forEach((button) => {
-    button.addEventListener('click', () => {
-      const tagName = button.dataset.tagName;
-      const currentNames = parseTagNames(filterTagNamesEl.value);
-      const nextNames = currentNames.includes(tagName)
-        ? currentNames.filter((name) => name !== tagName)
-        : [...currentNames, tagName];
-      filterTagNamesEl.value = nextNames.join(', ');
-      refreshFilterTagOptions();
-      applyFiltersAndRender();
-    });
-  });
-}
-
-function refreshFilterStageOptions() {
-  if (!filterStageChipsEl || !filterStageNamesEl) return;
-
-  const selectedNames = parseTagNames(filterStageNamesEl.value);
-  const selectedSet = new Set(selectedNames);
-  const uniqueStages = [...new Set(
-    state.scenarios
-      .map((scenario) => String(scenario.stage || '').trim())
-      .filter(Boolean)
-  )].sort((a, b) => a.localeCompare(b));
-
-  filterStageChipsEl.innerHTML = uniqueStages
-    .map((stageName) => {
-      const isSelected = selectedSet.has(stageName);
-      return `<button type="button" class="tag-chip ${isSelected ? 'selected' : ''}" data-stage-name="${stageName}" style="--chip-color:#5b8cff;">${stageName}</button>`;
-    })
-    .join('');
-
-  filterStageChipsEl.querySelectorAll('.tag-chip').forEach((button) => {
-    button.addEventListener('click', () => {
-      const stageName = button.dataset.stageName;
-      const currentNames = parseTagNames(filterStageNamesEl.value);
-      const nextNames = currentNames.includes(stageName)
-        ? currentNames.filter((name) => name !== stageName)
-        : [...currentNames, stageName];
-      filterStageNamesEl.value = nextNames.join(', ');
-      refreshFilterStageOptions();
-      applyFiltersAndRender();
-    });
-  });
-}
-
-function updateSearchStateFromControls() {
-  const searchValues = getSearchFieldValues();
-  const resultIds = state.scenarios
-    .filter((scenario) => matchesScenario(scenario, searchValues))
-    .map((scenario) => scenario.id);
-
-  state.search = {
-    ...state.search,
-    ...searchValues,
-    active: isSearchActive(searchValues),
-    resultIds
-  };
-}
-
 function applyFiltersAndRender() {
-  updateSearchStateFromControls();
   syncSelectedScenarioToVisible();
   render();
-}
-
-function resetFilters() {
-  if (filterKeywordEl) filterKeywordEl.value = '';
-  if (filterTitleEl) filterTitleEl.value = '';
-  if (filterSummaryEl) filterSummaryEl.value = '';
-  if (filterGmEl) filterGmEl.value = '';
-  if (filterCharacterEl) filterCharacterEl.value = '';
-  if (filterTagNamesEl) filterTagNamesEl.value = '';
-  if (filterStageNamesEl) filterStageNamesEl.value = '';
-  if (filterTagModeEl) filterTagModeEl.value = 'or';
-  if (filterYearFromEl) filterYearFromEl.value = '';
-  if (filterYearToEl) filterYearToEl.value = '';
-  if (filterMonthFromEl) filterMonthFromEl.value = '';
-  if (filterMonthToEl) filterMonthToEl.value = '';
-
-  refreshFilterTagOptions();
-  refreshFilterStageOptions();
-
-  applyFiltersAndRender();
-}
-
-function initializeFilters() {
-  refreshFilterTagOptions();
-  refreshFilterStageOptions();
-  const inputs = [
-    filterKeywordEl,
-    filterTitleEl,
-    filterSummaryEl,
-    filterGmEl,
-    filterCharacterEl,
-    filterTagNamesEl,
-    filterStageNamesEl,
-    filterTagModeEl,
-    filterYearFromEl,
-    filterYearToEl,
-    filterMonthFromEl,
-    filterMonthToEl,
-  ].filter(Boolean);
-
-  inputs.forEach((input) => {
-    input.addEventListener('input', applyFiltersAndRender);
-    input.addEventListener('change', applyFiltersAndRender);
-  });
-
-  if (filterResetBtn) {
-    filterResetBtn.addEventListener('click', resetFilters);
-  }
-
-  if (filterDetailToggleBtn && filterAdvancedPanelEl) {
-    filterDetailToggleBtn.addEventListener('click', () => {
-      const isHidden = filterAdvancedPanelEl.classList.toggle('hidden');
-      filterDetailToggleBtn.setAttribute('aria-expanded', String(!isHidden));
-      filterDetailToggleBtn.textContent = isHidden ? '詳細' : '詳細を閉じる';
-    });
-  }
-
-  applyFiltersAndRender();
-}
-
-function getMonthKey(scenario) {
-  return `${scenario.year}-${scenario.month}`;
-}
-
-function getMonthLabel(year, month) {
-  return `${year}年目 ${month}月`;
-}
-
-function getParticipants(scenario) {
-  return [...scenario.pcs, ...scenario.npcs].filter(Boolean);
-}
-
-function getSharedParticipants(a, b) {
-  const setA = new Set(getParticipants(a));
-  const setB = new Set(getParticipants(b));
-  return [...setA].filter((value) => setB.has(value));
-}
-
-function hasSameParticipantName(a, b) {
-  return getSharedParticipants(a, b).length > 0;
-}
-
-function getScenarioDateValue(scenario) {
-  return scenario.year * 12 + scenario.month;
 }
 
 function getLatestSharedParticipantPairIds(allScenarios) {
@@ -455,67 +149,6 @@ function getNearestEdgePoint(rect, groupRect, targetPoint, preferHorizontal = tr
   }, candidateList[0]);
 }
 
-function parseParticipants(value) {
-  return [...new Set(
-    (value || '')
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean)
-  )];
-}
-
-function normalizeScenario(rawScenario, index = 0) {
-  const id = rawScenario?.id || `s${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
-  const year = Number(rawScenario?.year) || 1;
-  const month = Number(rawScenario?.month) || 1;
-  const xPriority = Number.isFinite(Number(rawScenario?.xPriority)) ? Number(rawScenario.xPriority) : 1;
-  const title = rawScenario?.title || `シナリオ${index + 1}`;
-  const summary = rawScenario?.summary ?? '';
-  const stage = typeof rawScenario?.stage === 'string' ? rawScenario.stage : '';
-  const information = rawScenario?.information && typeof rawScenario.information === 'object' ? rawScenario.information : {};
-  const placementReferenceId = rawScenario?.placement && rawScenario.placement.referenceScenarioId
-    ? String(rawScenario.placement.referenceScenarioId)
-    : null;
-  const placement = placementReferenceId && placementReferenceId !== id
-    ? {
-        referenceScenarioId: placementReferenceId,
-        relation: rawScenario.placement.relation === 'same' || rawScenario.placement.relation === 'after'
-          ? rawScenario.placement.relation
-          : 'same'
-      }
-    : null;
-  const tags = Array.isArray(rawScenario?.tags)
-    ? rawScenario.tags
-        .filter(Boolean)
-        .map((tag) => (typeof tag === 'string' ? tag : tag?.id || ''))
-        .filter(Boolean)
-    : [];
-
-  return {
-    id,
-    year,
-    month,
-    xPriority,
-    title,
-    summary,
-    stage,
-    information: {
-      trailer: typeof information.trailer === 'string' ? information.trailer : 'なし',
-      description: typeof information.description === 'string' ? information.description : '詳細なし'
-    },
-    gm: typeof rawScenario?.gm === 'string' ? rawScenario.gm : '',
-    pcs: Array.isArray(rawScenario?.pcs) ? rawScenario.pcs.filter(Boolean) : [],
-    npcs: Array.isArray(rawScenario?.npcs) ? rawScenario.npcs.filter(Boolean) : [],
-    tags,
-    placement
-  };
-}
-
-function normalizeScenarios(rawScenarios) {
-  if (!Array.isArray(rawScenarios)) return [];
-  return rawScenarios.map((scenario, index) => normalizeScenario(scenario, index));
-}
-
 function refreshTagSelectOptions() {
   const modal = document.getElementById('scenario-form-modal');
   if (!modal) return;
@@ -531,28 +164,6 @@ function refreshTagSelectOptions() {
   tagInput.dataset.availableTags = JSON.stringify(available);
 }
 
-function parseTagNames(value) {
-  const items = Array.isArray(value)
-    ? value
-    : String(value ?? '').split(',');
-
-  return [...new Set(
-    items
-      .map((item) => String(item).trim())
-      .filter(Boolean)
-  )];
-}
-
-function getTagIdsFromNames(tagNames) {
-  const normalizedNames = Array.isArray(tagNames)
-    ? tagNames
-    : parseTagNames(tagNames);
-
-  return normalizedNames
-    .map((tagName) => state.tags.find((tag) => tag.name === tagName)?.id)
-    .filter(Boolean);
-}
-
 function buildReferenceOptions(currentScenarioId = null) {
   const candidates = state.scenarios.filter((scenario) => scenario.id !== currentScenarioId);
   return ['<option value="">なし</option>']
@@ -560,36 +171,11 @@ function buildReferenceOptions(currentScenarioId = null) {
     .join('');
 }
 
-function getTagById(tagId) {
-  return state.tags.find((tag) => tag.id === tagId) || null;
-}
-
-function getScenarioTags(scenario) {
-  if (!scenario || !Array.isArray(scenario.tags)) return [];
-  return scenario.tags
-    .map((tagId) => getTagById(tagId))
-    .filter(Boolean);
-}
-
-function getScenarioTagGradient(scenario) {
-  const tags = getScenarioTags(scenario);
-  if (tags.length === 0) return '';
-  return `linear-gradient(90deg, ${tags.map((tag) => tag.color).join(', ')})`;
-}
-
 function buildTagOptions(selectedTagIds = []) {
   const selectedSet = new Set(selectedTagIds);
   return state.tags
     .map((tag) => `<option value="${tag.id}" ${selectedSet.has(tag.id) ? 'selected' : ''}>${tag.name}</option>`)
     .join('');
-}
-
-function normalizeTag(rawTag, index = 0) {
-  const name = String(rawTag?.name || '').trim() || `タグ${index + 1}`;
-  const color = typeof rawTag?.color === 'string' && rawTag.color ? rawTag.color : '#5b8cff';
-  const id = rawTag?.id || `tag-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
-
-  return { id, name, color };
 }
 
 function renderTagChipSelection(chipsEl, tagInput) {
@@ -926,7 +512,7 @@ function openScenarioModal(scenarioId = null) {
   const chipsEl = modal.querySelector('#existing-tag-chips');
   const scenario = scenarioId ? getScenarioById(scenarioId) : null;
 
-  form.dataset.mode = scenario ? 'edit' : 'add';
+  form.dataset.mode = getScenarioFormMode(scenario);
   deleteBtn.style.display = scenario ? 'inline-flex' : 'none';
   form.dataset.scenarioId = scenario ? scenario.id : '';
   titleEl.textContent = scenario ? 'シナリオ編集' : 'シナリオ追加';
@@ -946,7 +532,7 @@ function openScenarioModal(scenarioId = null) {
     form.querySelector('[name="npcs"]').value = scenario.npcs.join(', ');
     form.querySelector('[name="trailer"]').value = scenario.information?.trailer || '';
     form.querySelector('[name="description"]').value = scenario.information?.description || '';
-    form.querySelector('[name="relation"]').value = scenario.placement?.relation || 'none';
+    form.querySelector('[name="relation"]').value = getRelationValue(scenario.placement);
   } else {
     form.reset();
     form.querySelector('[name="year"]').value = 1;
@@ -1632,7 +1218,7 @@ function deleteScenario(scenarioId) {
 
 function renderDetailPanel() {
   const visibleScenarios = getVisibleScenarios();
-  const selected = visibleScenarios.find((scenario) => scenario.id === state.selectedScenarioId) || visibleScenarios[0];
+  const selected = getSelectedScenario(visibleScenarios, state.selectedScenarioId);
   if (!selected) {
     const message = state.search.active
       ? '検索条件に一致するシナリオがありません'
@@ -1684,18 +1270,8 @@ function renderTimeline() {
     return;
   }
 
-  const monthMap = new Map();
-  visibleScenarios.forEach((scenario) => {
-    const key = getMonthKey(scenario);
-    if (!monthMap.has(key)) monthMap.set(key, []);
-    monthMap.get(key).push(scenario);
-  });
-
-  const monthKeys = [...monthMap.keys()].sort((a, b) => {
-    const [yearA, monthA] = a.split('-').map(Number);
-    const [yearB, monthB] = b.split('-').map(Number);
-    return yearA * 12 + monthA - (yearB * 12 + monthB);
-  });
+  const monthMap = groupScenariosByMonth(visibleScenarios);
+  const monthKeys = sortMonthKeys(monthMap.keys());
 
   const allRendered = [];
   const layoutById = computeStoryLaneLayout(state.scenarios);
@@ -2423,7 +1999,7 @@ function collectConnections(cards, visibleMap, timelineRect, validPairIds) {
       if (!scenarioA || !scenarioB) continue;
       if (!hasSameParticipantName(scenarioA, scenarioB)) continue;
 
-      const pairKey = [scenarioA.id, scenarioB.id].sort().join(':');
+      const pairKey = getScenarioPairKey(scenarioA, scenarioB);
       if (!validPairIds.has(pairKey)) continue;
 
       const rectA = getRectFromCard(a, timelineRect);
@@ -2690,14 +2266,13 @@ function attachTimelineZoomHandlers() {
 }
 
 function render() {
-  refreshFilterTagOptions();
-  refreshFilterStageOptions();
-  updateSearchStateFromControls();
+  refreshFilterOptions(applyFiltersAndRender);
+  updateSearchStateFromFilters();
   syncSelectedScenarioToVisible();
   renderScenarioList();
   renderTimeline();
   renderDetailPanel();
-  updateFilterStatus();
+  updateFilterStatus(getVisibleScenarios);
 }
 
 document.getElementById('add-scenario-btn').addEventListener('click', () => {
@@ -2709,16 +2284,6 @@ document.getElementById('manage-tags-btn').addEventListener('click', () => {
 });
 
 attachTimelineZoomHandlers();
-
-function downloadJsonFile(filename, data) {
-  const blob = new Blob([data], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
 
 function loadScenariosFromJson(rawText) {
   try {
@@ -2747,12 +2312,8 @@ function loadScenariosFromJson(rawText) {
 }
 
 document.getElementById('json-export-btn').addEventListener('click', () => {
-  const payload = {
-    tags: state.tags,
-    scenarios: state.scenarios
-  };
-  const json = JSON.stringify(payload, null, 2);
-  downloadJsonFile('trpg_timeline_data.json', json);
+  const json = createJsonPayload(state.tags, state.scenarios);
+  downloadFile('trpg_timeline_data.json', json, 'application/json;charset=utf-8');
 
   const reloaded = JSON.parse(json);
   const normalizedTags = Array.isArray(reloaded.tags)
@@ -5016,13 +4577,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
   </body>
 </html>`;
 
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  downloadFile(filename, html, 'text/html;charset=utf-8');
 });
 
-initializeFilters();
+initializeFilters(applyFiltersAndRender);

@@ -59,11 +59,9 @@ https://example.github.io/TRPG_TimeLine/
 
 ## ローカルでの起動方法
 
-### 方法1: そのままブラウザで開く
+### ローカルWebサーバーで開く
 
-- [index.html](index.html) をダブルクリックして開く
-
-### 方法2: ローカルWebサーバーで開く
+ES Modulesを使用しているため、ローカルWebサーバー経由で開いてください。
 
 ```bash
 cd "c:\Users\hakue\source\repos\TRPG_TimeLine"
@@ -177,7 +175,15 @@ git push origin main
 
 - [index.html](index.html): アプリの画面構成
 - [styles.css](styles.css): レイアウトと見た目
-- [app.js](app.js): 状態管理、描画、検索、保存、HTML出力のロジック
+- [app.js](app.js): アプリの起動、描画、編集、HTML出力の調整
+- [js/state.js](js/state.js): アプリ状態とDOM参照
+- [js/scenario-data.js](js/scenario-data.js): シナリオ、タグ、参加者データの正規化
+- [js/filters.js](js/filters.js): 検索とフィルター
+- [js/timeline-layout.js](js/timeline-layout.js): 月単位のタイムライン配置補助
+- [js/connections.js](js/connections.js): 接続線のペア識別・端点補助
+- [js/renderer.js](js/renderer.js): 描画用の選択処理
+- [js/modals.js](js/modals.js): モーダル入力値の補助
+- [js/persistence.js](js/persistence.js): JSON保存用データとファイルダウンロード
 - [README.md](README.md): 使用方法と公開・更新手順
 
 ---
